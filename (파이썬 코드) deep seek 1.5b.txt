@@ -1,0 +1,111 @@
+# 필요한 라이브러리 임포트
+import streamlit as st  # 웹 애플리케이션 구축을 위한 라이브러리
+from langchain_community.document_loaders import PyPDFLoader  # PDF 파일을 로드하고 텍스트를 추출하는 도구
+from langchain.text_splitter import RecursiveCharacterTextSplitter  # 긴 텍스트를 작은 청크로 분할하는 도구
+from langchain_community.embeddings import OllamaEmbeddings  # Ollama를 사용한 텍스트 임베딩 생성
+from langchain_community.vectorstores import Chroma  # 벡터 데이터베이스 저장소
+from langchain_community.llms import Ollama  # Ollama LLM(대규모 언어 모델) 인터페이스
+from langchain.chains import RetrievalQA  # 질의응답 체인 구현
+import tempfile  # 임시 파일 처리
+import os  # 파일 시스템 작업
+import time  # 시간 측정을 위한 모듈 추가
+
+# Streamlit 페이지 기본 설정
+st.set_page_config(
+    page_title="AI 논문 분석기",  # 브라우저 탭에 표시될 제목
+    page_icon="📚",  # 페이지 아이콘
+    layout="wide"  # 페이지 레이아웃을 와이드 모드로 설정
+)
+
+# 메인 페이지 제목 설정
+st.title("📚 AI 논문 분석 도우미 with deepseek-r1_1.5b")
+
+# PDF 파일 업로드 위젯 생성
+uploaded_file = st.file_uploader("논문 PDF 파일을 업로드하세요", type=['pdf'])
+
+# 파일이 업로드되면 실행되는 로직
+if uploaded_file is not None:
+    # 업로드된 파일을 임시 파일로 저장
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        temp_path = tmp_file.name  # 임시 파일 경로 저장
+
+    try:
+        # PDF 파일 로드 및 텍스트 추출
+        loader = PyPDFLoader(temp_path)
+        pages = loader.load()  # PDF의 각 페이지를 로드
+
+        # 추출된 텍스트를 작은 청크로 분할
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,  # 각 청크의 최대 문자 수
+            chunk_overlap=200  # 청크 간 중복되는 문자 수 (문맥 유지를 위함)
+        )
+        splits = text_splitter.split_documents(pages)
+
+        # 텍스트 임베딩 설정
+        embeddings = OllamaEmbeddings(
+            model="nomic-embed-text",  # 임베딩에 사용할 모델
+            base_url="http://localhost:11434"  # Ollama 서버 URL
+        )
+        
+        # 벡터 저장소 설정 및 문서 저장
+        vectorstore = Chroma.from_documents(
+            documents=splits,  # 분할된 문서
+            embedding=embeddings,  # 임베딩 함수
+            persist_directory="./.chroma"  # 벡터 저장소 위치
+        )
+
+        # LLM(대규모 언어 모델) 설정
+        llm = Ollama(
+            model="deepseek-r1:1.5b",  # 사용할 LLM 모델
+            temperature=0,  # 응답의 창의성 정도 (0: 가장 결정적)
+            base_url="http://localhost:11434"  # Ollama 서버 URL
+        )
+
+        # 질의응답 체인 생성
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,  # 사용할 LLM
+            chain_type="stuff",  # QA 체인 타입
+            retriever=vectorstore.as_retriever()  # 문서 검색기
+        )
+
+        # 사용자 질문 입력 받기
+        user_question = st.text_input("논문에 대해 질문해보세요:")
+        
+        # 질문이 입력되면 실행
+        if user_question:
+            # 시작 시간 기록
+            start_time = time.time()
+            
+            with st.spinner('답변을 생성하고 있습니다...'):  # 로딩 표시
+                # 진행 상태 표시
+                progress_placeholder = st.empty()
+                progress_placeholder.text("답변을 생성 중입니다...")
+                
+                # 질문에 대한 답변 생성
+                response = qa_chain.invoke({"query": user_question})
+                
+                # 종료 시간 기록 및 소요 시간 계산
+                end_time = time.time()
+                elapsed_time = round(end_time - start_time, 2)
+                
+                # 진행 상태 텍스트 제거
+                progress_placeholder.empty()
+                
+                # 답변 및 소요 시간 표시
+                st.write("답변:")
+                st.write(response['result'])
+                st.info(f"⏱️ 답변 생성 소요 시간: {elapsed_time}초")
+
+    finally:
+        # 처리 완료 후 임시 파일 삭제
+        os.unlink(temp_path)
+
+# 사이드바에 사용 설명 추가
+with st.sidebar:
+    st.header("사용 방법")
+    st.write("""
+    1. PDF 논문 파일을 업로드합니다.
+    2. 논문에 대해 궁금한 점을 질문합니다.
+    3. AI가 논문을 분석하여 답변을 제공합니다.
+    """)
